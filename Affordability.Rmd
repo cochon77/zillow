@@ -1,0 +1,516 @@
+---
+title: "Housing Affordability"
+author: "Eunho Pi"
+output: html_notebook
+runtime: shiny
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+shiny address: https://cochon77.shinyapps.io/Affordability/
+
+```{r, include=FALSE}
+mypacks <- c("maps","ggplot2","dplyr","tidyverse","readxl","shiny","stringr","shinythemes", "plotly","mapproj")  # what packages are needed?
+packs <- installed.packages()   # find installed package list
+install.me <- mypacks[!(mypacks %in% packs[,"Package"])]  #what needs to be installed?
+if (length(install.me) >= 1) install.packages(install.me, repos = "http://cran.us.r-project.org")   # install (if needed)
+lapply(mypacks, library, character.only=TRUE)  # load all packages
+```
+
+```{r}
+address <- paste(getwd(), "Affordability%_2018Q2 (1).csv", sep = "/")
+afford <- read.csv(address)
+top50 <- afford %>% filter(SizeRank %in% c(0:50))
+top50 <- top50 %>% mutate(state = str_trim(str_extract(RegionName, "(?<=,).+$")))
+
+narrow <- function(i){
+  outcome <- gather(top50 %>% filter(Index == UQ(levels(top50$Index)[i])), key = Date, value = UQ(levels(top50$Index)[i]), 6:163) %>% select(8)
+  return(outcome)
+}
+
+top50.narrow <- 
+  gather(top50 %>% filter(Index == UQ(levels(top50$Index)[1])), key = Date, value = UQ(levels(top50$Index)[1]), 6:163) %>% select(-4)
+
+top50.narrow <- top50.narrow %>% bind_cols(lapply(2:3, narrow)) %>% bind_cols
+
+top50.narrow <- top50.narrow %>% mutate(Date = str_sub(str_replace(Date, "\\.","-"),2,-1))
+
+top50.narrow$Date <- as.Date(paste(top50.narrow$Date,"-01",sep=""))
+
+MW <- c("IL","IN","IA","KS","MI","MN","MO","NE","ND","OH","SD","WI")
+MW.2 <- c("illinois","indiana","iowa","kansas","michigan","minnesota","missouri","nebraska","north dakota", "ohio","south dakota","wisconsin")
+W <- c("AZ","CO","ID","MT","NV","NM","UT","WY","AK","CA","HI","OR","WA")
+W.2 <- c("arizona","colorado","idaho","montana","nevada","new mexico","utah","wyoming","california","oregon","washington")
+NE <- c("CT","ME","MA","NH","RI","VT","NJ","NY","PA","DE","MD","DC")
+NE.2 <- c("conneticut","maine","massachusetts","new hampshire","rhode island","vermont","new jersey","new york","pennsylvania","delaware","maryland","district of columbia")
+S <- c("VA","WV","KY","TN","NC","SC","FL","GA","AL","MS","LA","AK","TX","OK")
+S.2 <- c("virginia","west virginia","kentucky","tennessee","north carolina","south carolina","florida","georgia","alabama","mississippi","louisiana","arkansas","texas","oklahoma")
+
+top50.narrow <- top50.narrow %>% mutate(Region = ifelse(state %in% MW, "MW", ifelse(state %in% W, "W", ifelse(state %in% NE, "NE", ifelse(state %in% S, "S", "National")))))
+
+colnames(top50.narrow)[7:9] <- c("Mortgage","PriceToIncome","Rent")
+```
+
+## History of American Housing Market: From Inflation Shock to Rent Crisis
+
+My data visualization project focuses on illustrating the historical trends of urban housing affordability since 1980s up to the present. Using the data from 50 top largest cities in the U.S., I incorporated numerous time series and scatter plots (all interactive) to explain what has happened in the U.S. housing market and how it influenced the housing affordability. These graphical illustrations summarize the history of housing affordability in intuitive and simple manner. 
+
+```{r}
+data(us.cities)
+cities <- us.cities %>% filter(country.etc != "AK" & country.etc != "HI")
+top50.narrow2 <- top50.narrow
+top50.narrow2$RegionName <- str_remove(top50.narrow2$RegionName, ",")
+top50.narrow2 <- top50.narrow2 %>% mutate(Year = as.numeric(substr(Date, 1, 4)))
+
+top50.narrow2 <- top50.narrow2 %>% 
+  group_by(RegionID, RegionName, Region, Year, SizeRank, state) %>% 
+  summarise(Mortgage = mean(Mortgage), Rent = mean(Rent), PriceToIncome = mean(PriceToIncome)) %>% ungroup(RegionID, RegionName, Region, Year, SizeRank, state)
+
+cities.names <- c("Los Angeles CA","Dallas TX","Miami FL","WASHINGTON DC","Louisville KY","Minneapolis MN","Saint Louis MO")
+zillow.names <- c("Dallas-Fort Worth TX","Los Angeles-Long Beach-Anaheim CA", "Louisville-Jefferson County KY", "Miami-Fort Lauderdale FL","Minneapolis-St Paul MN", "St. Louis MO", "Washington DC")
+
+cities$name <- replace(cities$name, which(cities$name %in% cities.names), zillow.names)
+
+top50.narrow2 <- left_join(top50.narrow2, cities, by = c("RegionName" = "name")) %>% select(-10)
+
+summary.region2 <- top50.narrow2 %>% 
+  group_by(Region, Year) %>% 
+  summarize(Mortgage = mean(Mortgage), Rent = mean(Rent), PriceToIncome = mean(PriceToIncome)) %>% ungroup(Region, Year)
+```
+
+### Trend across the Different Parts of the Nation
+
+```{r}
+summary.region <- top50.narrow %>% 
+  group_by(Region, Date) %>% 
+  summarize(Mortgage = mean(Mortgage), Rent = mean(Rent), PriceToIncome = mean(PriceToIncome))
+
+ui3 <- 
+  fluidPage(theme = shinytheme("lumen"),
+    sidebarLayout(
+    sidebarPanel(
+      dateRangeInput("date", strong("Date range"), start = "1979-03-01", end = "2018-06-01",
+                     min = "1979-03-01", max = "2018-06-01")
+  ),
+    mainPanel(
+      tabsetPanel(
+        type = "tabs",
+                  tabPanel("Rent Affordability", plotlyOutput("rent", height = "300px")),
+                  tabPanel("Mortgage Affordability", plotlyOutput("mortgage", height = "300px")),
+                  tabPanel("Price to Income Ratio", plotlyOutput("PriceToIncome", height = "300px"))
+      )
+    )
+  )
+)
+
+server3 <- function(input, output){
+  
+  selected_trends <- reactive({
+    req(input$date)
+    validate(need(!is.na(input$date[1]) & !is.na(input$date[2]), "Error: Please provide both a start and an end date."))
+    validate(need(input$date[1] < input$date[2], "Error: Start date should be earlier than end date."))
+    summary.region %>%
+      filter(
+        Date > as.POSIXct(input$date[1]) & Date < as.POSIXct(input$date[2]
+        ))
+  })
+  
+  output$mortgage <- renderPlotly({
+    ggplotly(ggplot(selected_trends(), aes(x = Date, y=Mortgage, color=Region)) +
+           geom_line() + 
+             labs(x="Year", y = "Mortgage Affordability"))
+  })
+  
+  output$rent <- renderPlotly({
+    ggplotly(ggplot(selected_trends(), aes(x = Date, y=Rent, color=Region)) +
+           geom_line() + 
+             labs(x="Year", y = "Rent Affordability")) 
+  })
+  
+  output$PriceToIncome <- renderPlotly({
+    ggplotly(ggplot(selected_trends(), aes(x = Date, y=PriceToIncome, color=Region)) +
+           geom_line() + 
+             labs(x="Year", y = "Price To Income"))
+  })
+    
+}
+
+shinyApp(ui = ui3, server = server3)
+```
+
+The U.S. experienced the two major real estate crises during the recent periods. The first is the rise in mortgage rate from the Fed's monetary policy against double-digit inflation rate, and the second is Subprime Mortgage Crisis in 2007. In accordance with the historical context, Mortgage Affordability of the nation went through huge spikes one in the early 80s and the other in the late 2000s. One interesting observation is that there is no big spike in Price to Income Ratio in the early 80s (due to the inflation crisis) but during the Subprime Mortgage incidence (followed up by the 2008 financial crisis). Such deviation may be arisen from the different challenges, such as inflation, unemployment, collapse of financial market, that the economy was facing with during each period. 
+
+Also, mortgage shock was prevalent throughout the nation in the early 80s; however, the impact of Subprime Mortgage is mostly concentrated in the West, a pattern that coincides with the historical fact that the coastal cities in the West were the biggest victims of the crisis. 
+Another notable pattern observed in the trend is that Rent Affordability has been increasing since it hit its minimum at the onset of 2000s. The Rent Affordability in the West spikes up more sharply than the rest of the regions after the late 2000s. The rise in Rent Affordability can be a sign of a shift in demand among housing market from mortgage to rental housing. In particular, the exponential growth in the West during the late 2000s may be a combined effect from Subprime Mortgage and the lack of housing availability in Los Angeles and Bay Area. Further investigation with respect to the other variables, such as unemployment rate, may shed more light on the influences of macroeconomic factors on housing affordability. 
+
+*Selling Point: The filtered graph highlights the differences in housing affordability trend among the different regions, enriching the storytelling aspect of the visualization. The interactive display of the trend allows the user to explore the data easily but also select particular regions, variable of interest, and time frame that he/she wants to explore further. 
+
+### Observation of Mortgage and Rent Affordability Trend in a Dynamic Setting
+
+```{r}
+ui2 <- fluidPage(
+  theme = shinytheme("lumen"),
+  fluidRow(
+    column(6,
+             selectInput(inputId = "variable", label = strong("Map Variable"),
+                choices = c("Mortgage Affordability" = "Mortgage",
+                            "Rent Affordability" = "Rent"),
+                selected = "Mortgage Affordability")),
+           
+      column(6,
+             sliderInput("year",
+                strong("Year"),
+                min = 1979,
+                max = 2018,
+                value = 2010,
+                animate = animationOptions(interval = 2000), sep = ""))
+      
+      
+             ),
+      
+  fluidRow(
+    column(3,
+           plotlyOutput(outputId = "mapplotW", height = "160px"),
+           plotlyOutput(outputId = "lineplotW", height = "210px"),
+           selectInput(inputId = "cityw", label = strong("City, West"),
+                choices = unique((top50.narrow2 %>% filter(Region == "W"))$RegionName),
+                selected = "San Francisco CA")
+           ),
+    column(3,
+           plotlyOutput(outputId = "mapplotNE", height = "160px"),
+           plotlyOutput(outputId = "lineplotNE", height = "210px"),
+           selectInput(inputId = "cityne", label = strong("City, Northeast"),
+                choices = unique((top50.narrow2 %>% filter(Region == "NE"))$RegionName),
+                selected = "New York NY")
+           ),
+    column(3,
+           plotlyOutput(outputId = "mapplotS", height = "160px"),
+           plotlyOutput(outputId = "lineplotS", height = "210px"),
+           selectInput(inputId = "citys", label = strong("City, South"),
+                choices = unique((top50.narrow2 %>% filter(Region == "S"))$RegionName),
+                selected = "Miami-Fort Lauderdale FL")
+    ),
+    column(3,
+           plotlyOutput(outputId = "mapplotMW", height = "160px"),
+           plotlyOutput(outputId = "lineplotMW", height = "210px"),
+           selectInput(inputId = "citymw", label = strong("City, Midwest"),
+                choices = unique((top50.narrow2 %>% filter(Region == "MW"))$RegionName),
+                selected = "Chicago IL")
+    )
+    )
+  )
+
+server2 <- function(input, output) {
+  
+  mapW <- reactive({
+    top50.narrow2 %>% 
+      filter(
+      Year == input$year,
+      Region == "W"
+      )
+  })
+  
+  lineW <- reactive({
+    top50.narrow2 %>%
+      filter(
+        Year <= input$year,
+        RegionName == input$cityw
+        )
+  })
+  
+  mapNE <- reactive({
+    top50.narrow2 %>% 
+      filter(
+      Year == input$year,
+      Region == "NE"
+      )
+  })
+  
+  lineNE <- reactive({
+    top50.narrow2 %>%
+      filter(
+        Year <= input$year,
+        RegionName == input$cityne
+        )
+  })
+  
+  mapS <- reactive({
+    top50.narrow2 %>% 
+      filter(
+      Year == input$year,
+      Region == "S"
+      )
+  })
+  
+  lineS <- reactive({
+    top50.narrow2 %>%
+      filter(
+        Year <= input$year,
+        RegionName == input$citys
+        )
+  })
+  
+  mapMW <- reactive({
+    top50.narrow2 %>% 
+      filter(
+      Year == input$year,
+      Region == "MW"
+      )
+  })
+  
+  lineMW <- reactive({
+    top50.narrow2 %>%
+      filter(
+        Year <= input$year,
+        RegionName == input$citymw
+        )
+  })
+  
+  limits_col <- reactive({
+    top50.narrow2 %>%
+      select(input$variable)
+  })
+  
+  output$mapplotW <-renderPlotly({
+    p <- 
+      ggplot(data = subset(map_data("state"), region %in% W.2), mapping = aes(x = long, y = lat)) + 
+      geom_polygon(aes(group = group), fill = "gray") +
+      geom_path(aes(group=group), color = "white") +
+      coord_map() +
+      theme(legend.position='none') +
+      labs(x = "", y = "")
+    
+    draw <- 
+      p + geom_point(data = mapW(), aes_string(x=quote(long),y=quote(lat), size = quote(pop), label = quote(RegionName), color = input$variable)) + scale_size_area(max_size=3) + scale_colour_gradientn(colors = c("green","red"), limits = range(limits_col(), na.rm = T))
+    
+    ggplotly(draw, tooltip = c(input$variable,"RegionName")) %>% config(displayModeBar = F)
+    })
+  
+  output$lineplotW <- renderPlotly({
+    p <- ggplot(data = lineW()) +
+      geom_line(aes(x = Year, y = Mortgage, col = "Mortgage")) +
+      geom_line(aes(x = Year, y = Rent, col = "Rent")) +
+      coord_cartesian(ylim = c(0,1), xlim = c(1979,2019)) +
+      labs(y="Affordability", x = "")
+    
+    ggplotly(p, tooltip = c("x","Mortgage","Rent"))%>% layout(legend = list(orientation = "v", x = 0.1, y = -1))
+  })
+  
+  output$mapplotNE <-renderPlotly({
+    p <- 
+      ggplot(data = subset(map_data("state"), region %in% NE.2), mapping = aes(x = long, y = lat)) + 
+      geom_polygon(aes(group = group), fill = "gray") +
+      geom_path(aes(group=group), color = "white") +
+      coord_map() +
+      theme(legend.position='none')+
+      labs(x = "", y = "")
+    draw <- 
+      p + geom_point(data = mapNE(), aes_string(x=quote(long),y=quote(lat), size = quote(pop), label = quote(RegionName), color = input$variable)) + scale_size_area(max_size=3) + scale_colour_gradientn(colors = c("green","red"), limits = range(limits_col(), na.rm = T))
+    
+    ggplotly(draw, tooltip = c(input$variable,"RegionName")) %>% config(displayModeBar = F)
+    })
+  
+  output$lineplotNE <- renderPlotly({
+    p <- ggplot(data = lineNE()) +
+      geom_line(aes(x = Year, y = Mortgage, col = "Mortgage")) +
+      geom_line(aes(x = Year, y = Rent, col = "Rent")) + 
+      coord_cartesian(ylim = c(0,1), xlim = c(1979,2019)) +
+      labs(y="", x = "")
+    
+    ggplotly(p, tooltip = c("x","y")) %>% layout(legend = list(orientation = "v", x = 0.1, y = -1))
+  })
+  
+  output$mapplotMW <-renderPlotly({
+    p <- 
+      ggplot(data = subset(map_data("state"), region %in% MW.2), mapping = aes(x = long, y = lat)) + 
+      geom_polygon(aes(group = group), fill = "gray") +
+      geom_path(aes(group=group), color = "white") +
+      coord_map() +
+      theme(legend.position='none')+
+      labs(x = "", y = "")
+    
+    draw <- p + geom_point(data = mapMW(), aes_string(x=quote(long),y=quote(lat), size = quote(pop), label = quote(RegionName), color = input$variable)) + scale_size_area(max_size=3) + scale_colour_gradientn(colors = c("green","red"), limits = range(limits_col(), na.rm = T))
+    
+    ggplotly(draw, tooltip = c(input$variable,"RegionName")) %>% config(displayModeBar = F)
+    })
+  
+  output$lineplotMW <- renderPlotly({
+    p <- ggplot(data = lineMW()) +
+      geom_line(aes(x = Year, y = Mortgage, col = "Mortgage")) +
+      geom_line(aes(x = Year, y = Rent, col = "Rent")) + 
+      coord_cartesian(ylim = c(0,1), xlim = c(1979,2019)) +
+      labs(y="", x = "")
+    
+    ggplotly(p, tooltip = c("x","y")) %>% layout(legend = list(orientation = "v", x = 0.1, y = -1))
+  })
+  
+  output$mapplotS <-renderPlotly({
+    p <- ggplot(data = subset(map_data("state"), region %in% S.2), mapping = aes(x = long, y = lat)) + 
+      geom_polygon(aes(group = group), fill = "gray") +
+      geom_path(aes(group=group), color = "white") +
+      coord_map() +
+      theme(legend.position='none')+
+      labs(x = "", y = "")
+    
+    draw <- p + geom_point(data = mapS(), aes_string(x=quote(long),y=quote(lat), size = quote(pop), label = quote(RegionName), color = input$variable)) + scale_size_area(max_size=3) + scale_colour_gradientn(colors = c("green","red"), limits = range(limits_col(), na.rm = T))
+    
+    ggplotly(draw, tooltip = c(input$variable,"RegionName")) %>% config(displayModeBar = F)
+    })
+  
+  output$lineplotS <- renderPlotly({
+    p <- ggplot(data = lineS()) +
+      geom_line(aes(x = Year, y = Mortgage, col = "Mortgage")) +
+      geom_line(aes(x = Year, y = Rent, col = "Rent")) + 
+      coord_cartesian(ylim = c(0,1), xlim = c(1979,2019)) +
+      labs(y="", x = "")
+    
+    ggplotly(p, tooltip = c("x","y")) %>% layout(legend = list(orientation = "v", x = 0.1, y = -1))
+  })
+  
+}
+
+shinyApp(ui = ui2, server = server2)
+```
+
+The time series plot also supports the historical claims raised above. If you set the Map Variable to Mortgage Affordability and plot the map and the line graph along the sequence, it is notable that the color of dots in early 80s are generally in darker tone than the rest of the periods, implying that the mortgage crisis was prevalent throughout the nation. As the year hits around the late 2000s, the affordability crisis is prominent within the cities in West Coast, like Los Angeles and San Francisco, whereas the cities in the other parts of the country are relatively free from such concerns. 
+
+*Selling Point: The time series plot gives more sense of how the affordability trend has changed with respect to time. Also, simultaneous display of the cities further underscores the disparities in trend across the regions. Using color to illustrate the severity of the affordability crisis makes more sense intuitively than simply showing the number (some users might comprehend in a way that the house is more affordable as the index gets higher).
+
+### Rent v. Mortgage Affordability
+
+```{r, warning=FALSE, message=FALSE}
+top50.narrow$Period <- ifelse(top50.narrow$Date < as.Date("1985-01-01"), "Early 80s", ifelse(top50.narrow$Date > as.Date("2005-01-01"), "Post 2005", "Mid 1980s-Mid 2000s"))
+
+ui4 <- 
+  fluidPage(theme = shinytheme("lumen"),
+
+      tabsetPanel(
+        type = "tabs",
+        tabPanel("West", fluidRow(column(12,plotlyOutput("w", height = "350px")))),
+        tabPanel("Northeast", fluidRow(column(12,plotlyOutput("ne", height = "350px")))),
+        tabPanel("South", fluidRow(column(12,plotlyOutput("s", height = "350px")))),
+        tabPanel("Midwest", fluidRow(column(12,plotlyOutput("mw", height = "350px"))))
+    )
+  )
+
+server4 <- function(input, output){
+  
+  output$w <- renderPlotly({
+    ggplotly(
+      ggplot(top50.narrow %>% filter(Region == "W"), 
+             aes(x = Rent, y = Mortgage, label = Date, color = Period)) +
+        geom_point() + 
+        geom_smooth() + 
+        geom_abline(slope = 1) +
+        facet_wrap(~RegionName) +
+        labs(x = "Rent Affordability", y = "Mortgage Affordability"))
+  })
+  
+  output$ne <- renderPlotly({
+    ggplotly(
+      ggplot(top50.narrow %>% filter(Region == "NE"), 
+             aes(x = Rent, y = Mortgage, label = Date, color = Period)) +
+        geom_point() + 
+        geom_smooth() + 
+        geom_abline(slope = 1) +
+        facet_wrap(~RegionName) +
+        labs(x = "Rent Affordability", y = "Mortgage Affordability"))
+  })
+  
+  output$s <- renderPlotly({
+    ggplotly(
+      ggplot(top50.narrow %>% filter(Region == "S"), 
+             aes(x = Rent, y = Mortgage, label = Date, color = Period)) +
+        geom_point() + 
+        geom_smooth() + 
+        geom_abline(slope = 1) +
+        facet_wrap(~RegionName) +
+        labs(x = "Rent Affordability", y = "Mortgage Affordability"))
+  })
+  
+  output$mw <- renderPlotly({
+    ggplotly(
+      ggplot(top50.narrow %>% filter(Region == "MW"), 
+                    aes(x = Rent, y = Mortgage, label = Date, color = Period)) +
+        geom_point() + 
+        geom_smooth() + 
+        geom_abline(slope = 1) +
+        facet_wrap(~RegionName) + 
+        labs(x = "Rent Affordability", y = "Mortgage Affordability"))
+  })
+    
+}
+
+shinyApp(ui = ui4, server = server4)
+```
+
+The most interesting story deduced from this illustration is that mortgage seems affordable than rent after 2005 across the all cities in the U.S. It is suspected that the mortgage crisis in 2007 changed the dynamics in housing market and created a demand shift from mortgage housing to rental housing. Moreover, the fall in interest rate following the crisis further pulls down the price of mortgage, making mortgage look more affordable than rent.
+
+*Selling Point: It first pinpoints the possible relationship between Mortgage and Rent Affordability across different periods of time. Faceting based on the cities and the regions gives clearer picture of the association between the two variables. 
+
+## Unanswered Question
+
+### Mortgage v. Price To Income
+
+```{r, warning=FALSE, message=FALSE}
+ui5 <- 
+  fluidPage(theme = shinytheme("lumen"),
+
+      tabsetPanel(
+        type = "tabs",
+        tabPanel("National", fluidRow(column(12,plotlyOutput("national", height = "350px")))),
+        tabPanel("West", fluidRow(column(12,plotlyOutput("w", height = "350px")))),
+        tabPanel("Northeast", fluidRow(column(12,plotlyOutput("ne", height = "350px")))),
+        tabPanel("South", fluidRow(column(12,plotlyOutput("s", height = "350px")))),
+        tabPanel("Midwest", fluidRow(column(12,plotlyOutput("mw", height = "350px"))))
+    )
+  )
+
+server5 <- function(input, output){
+  
+  output$national <- renderPlotly({
+    ggplotly(ggplot(top50.narrow, aes(x = Mortgage, y = PriceToIncome, color = Period)) +
+               geom_point() + 
+               geom_smooth() +
+               labs(x = "Mortgage Affordability", y = "Price To Income"))
+  })
+  
+  output$w <- renderPlotly({
+    ggplotly(ggplot(top50.narrow %>% filter(Region == "W"), aes(x = Mortgage, y = PriceToIncome, color = Period)) +
+               geom_point() + 
+               geom_smooth() + 
+               labs(x = "Mortgage Affordability", y = "Price To Income") + 
+               facet_wrap(~RegionName))
+  })
+  
+  output$ne <- renderPlotly({
+    ggplotly(ggplot(top50.narrow %>% filter(Region == "NE"), aes(x = Mortgage, y = PriceToIncome, color = Period)) +
+               geom_point() + 
+               geom_smooth() + 
+               labs(x = "Mortgage Affordability", y = "Price To Income") +
+               facet_wrap(~RegionName))
+  })
+  
+  output$s <- renderPlotly({
+    ggplotly(ggplot(top50.narrow %>% filter(Region == "S"), aes(x = Mortgage, y = PriceToIncome, color = Period)) +
+               geom_point() + geom_smooth() + 
+               labs(x = "Mortgage Affordability", y = "Price To Income") +
+               facet_wrap(~RegionName))
+  })
+  
+  output$mw <- renderPlotly({
+    ggplotly(ggplot(top50.narrow %>% filter(Region == "MW"), aes(x = Mortgage, y = PriceToIncome, color = Period)) +
+               geom_point() + 
+               geom_smooth() + labs(x = "Mortgage Affordability", y = "Price To Income") +
+               facet_wrap(~RegionName))
+  })
+    
+}
+
+shinyApp(ui = ui5, server = server5)
+```
+
+As noted clearly, the strength of positive relationship between mortgage Affordability and Price To Income gets bigger as the time progresses. The deviations in strength is more notable in the bigger cities, yet I could not find the story accounting for the reason. As I could not further dig into this question due to constraints in time and resources, I will open this for the further investigation in the future. 
+

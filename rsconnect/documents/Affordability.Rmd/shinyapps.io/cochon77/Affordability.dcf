@@ -1,0 +1,12 @@
+name: Affordability
+title: Affordability
+username:
+account: cochon77
+server: shinyapps.io
+hostUrl: https://api.shinyapps.io/v1
+appId: 901114
+bundleId: 2056513
+url: https://cochon77.shinyapps.io/Affordability/
+when: 1556839237.75293
+asMultiple: FALSE
+asStatic: FALSE
